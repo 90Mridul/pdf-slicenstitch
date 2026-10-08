@@ -1,3 +1,4 @@
+import math
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -50,15 +51,36 @@ class SettingsDialog(tk.Toplevel):
 
     def apply_settings(self):
         try:
-            self.settings.apply_page_size(self.page_size.get())
-            self.settings.margin_px = max(10, int(float(self.margin.get())))
-            self.settings.pdf_dpi = max(72, int(float(self.dpi.get())))
-            self.settings.preview_scale = max(0.1, min(1.0, float(self.preview_scale.get())))
-            self.settings.update_custom_size(int(float(self.custom_width.get())), int(float(self.custom_height.get())))
-            self.settings.apply_page_size(self.page_size.get())
-            self.destroy()
-        except ValueError:
-            messagebox.showerror("Invalid settings", "Please enter valid numbers for the customization fields.")
+            margin = float(self.margin.get())
+            dpi = float(self.dpi.get())
+            preview_scale = float(self.preview_scale.get())
+            custom_width = float(self.custom_width.get())
+            custom_height = float(self.custom_height.get())
+            if not all(math.isfinite(value) for value in (margin, dpi, preview_scale, custom_width, custom_height)):
+                raise ValueError
+            page_size = self.page_size.get()
+            if page_size not in self.settings.page_size_options():
+                raise ValueError
+            margin_px = max(10, int(margin))
+            pdf_dpi = max(72, int(dpi))
+            preview_scale = max(0.1, min(1.0, preview_scale))
+            custom_size = (max(100, int(custom_width)), max(100, int(custom_height)))
+            page_height = {"A4": 3508, "Letter": 3100, "Custom": custom_size[1]}[page_size]
+            if margin_px * 2 >= page_height:
+                raise ValueError
+        except (ValueError, OverflowError):
+            messagebox.showerror(
+                "Invalid settings",
+                "Enter valid numbers and leave some usable page height by keeping the margin below half the page height.",
+            )
+            return
+
+        self.settings.margin_px = margin_px
+        self.settings.pdf_dpi = pdf_dpi
+        self.settings.preview_scale = preview_scale
+        self.settings.update_custom_size(*custom_size)
+        self.settings.apply_page_size(page_size)
+        self.destroy()
 
 
 class MultiPDFMasterCropper:
@@ -75,6 +97,7 @@ class MultiPDFMasterCropper:
         self.total_pages = 0
 
         self.all_snippets = []
+        self.current_pdf_snippet_start = 0
         self.current_pdf_crops = {}
         self.skipped_pages = set()
         self.saved_split_y = None
@@ -224,7 +247,7 @@ class MultiPDFMasterCropper:
         SettingsDialog(self.root, self.settings)
 
     def open_pdf(self, append=None):
-        if append is None and self.all_snippets:
+        if append is None and (self.pdf_doc is not None or self.all_snippets):
             append = messagebox.askyesnocancel(
                 "Add another PDF?",
                 "Append the selected PDF to the current output?\n\n"
@@ -233,24 +256,39 @@ class MultiPDFMasterCropper:
                 "Cancel: keep working here",
             )
             if append is None:
-                return
+                return False
 
         file_path = filedialog.askopenfilename(
             title="Choose a PDF to crop",
             filetypes=[("PDF documents", "*.pdf")],
         )
         if not file_path:
-            return
+            return False
 
         try:
             new_doc = pymupdf.open(file_path)
             if not new_doc or len(new_doc) == 0:
                 new_doc.close()
                 messagebox.showerror("Cannot open PDF", "This PDF does not contain any pages.")
-                return
+                return False
         except Exception as exc:
             messagebox.showerror("Cannot open PDF", f"The selected file could not be opened.\n\n{exc}")
-            return
+            return False
+
+        if append and self.pdf_doc is not None:
+            self.save_current_crop_state()
+            try:
+                current_snippets = self.render_cropped_snippets()
+            except Exception as exc:
+                new_doc.close()
+                messagebox.showerror(
+                    "Could not prepare preview",
+                    f"The current PDF could not be added to the output.\n\n{exc}",
+                )
+                return False
+            self.all_snippets = (
+                self.all_snippets[: self.current_pdf_snippet_start] + current_snippets
+            )
 
         if self.pdf_doc is not None:
             self.pdf_doc.close()
@@ -261,6 +299,7 @@ class MultiPDFMasterCropper:
         self.pdf_doc = new_doc
         self.total_pages = len(self.pdf_doc)
         self.current_page_num = 0
+        self.current_pdf_snippet_start = len(self.all_snippets)
         self.current_pdf_crops = {}
         self.skipped_pages = set()
 
@@ -268,6 +307,7 @@ class MultiPDFMasterCropper:
         self.btn_skip.config(state=tk.NORMAL)
         self.btn_go.config(state=tk.NORMAL)
         self.load_page(0)
+        return True
 
     def go_to_page(self):
         if self.pdf_doc is None:
@@ -509,17 +549,22 @@ class MultiPDFMasterCropper:
             self.finish_current_pdf_and_preview()
 
     def finish_current_pdf_and_preview(self):
-        prev_strip_height = sum(img.height for img in self.all_snippets)
+        prev_strip_height = sum(
+            img.height for img in self.all_snippets[: self.current_pdf_snippet_start]
+        )
         self.status_var.set("Preparing preview…")
         self.root.update_idletasks()
+        self.save_current_crop_state()
         try:
             new_snippets = self.render_cropped_snippets()
         except Exception as exc:
             messagebox.showerror("Could not prepare preview", f"The PDF pages could not be converted into the preview.\n\n{exc}")
             self.status_var.set("Preview preparation failed.")
             return
+        self.all_snippets = (
+            self.all_snippets[: self.current_pdf_snippet_start] + new_snippets
+        )
         if new_snippets:
-            self.all_snippets.extend(new_snippets)
             self.lbl_count.config(text=f"{len(self.all_snippets)} snippets in output")
         if not self.all_snippets:
             messagebox.showwarning("Warning", "No image snippets collected yet!")

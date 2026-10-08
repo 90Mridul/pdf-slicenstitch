@@ -1,6 +1,9 @@
 from dataclasses import dataclass, field
 
 
+CUSTOM_PAGE_DPI = 300
+
+
 @dataclass
 class ExportSettings:
     page_size: str = "A4"
@@ -9,7 +12,7 @@ class ExportSettings:
     margin_px: int = 60
     output_page_width_pts: float = 595.0
     output_page_height_pts: float = 842.0
-    output_margin_pts: float = 20.0
+    output_margin_pts: float = 14.4
     pdf_dpi: int = 300
     preview_scale: float = 0.22
     dark_mode: bool = True
@@ -28,23 +31,24 @@ class ExportSettings:
     custom_page_size: tuple[int, int] = field(default_factory=lambda: (2480, 3508))
 
     def apply_page_size(self, page_size: str):
+        if page_size not in self.page_size_options():
+            raise ValueError(f"Unsupported page size: {page_size}")
         self.page_size = page_size
         if page_size == "A4":
             self.page_width_px = 2480
             self.page_height_px = 3508
             self.output_page_width_pts = 595.0
             self.output_page_height_pts = 842.0
-            self.custom_page_size = (2480, 3508)
         elif page_size == "Letter":
             self.page_width_px = 2400
             self.page_height_px = 3100
             self.output_page_width_pts = 612.0
             self.output_page_height_pts = 792.0
-            self.custom_page_size = (2400, 3100)
         elif page_size == "Custom":
             self.page_width_px, self.page_height_px = self.custom_page_size
-        else:
-            self.page_width_px, self.page_height_px = self.custom_page_size
+            self.output_page_width_pts = self.page_width_px * 72 / CUSTOM_PAGE_DPI
+            self.output_page_height_pts = self.page_height_px * 72 / CUSTOM_PAGE_DPI
+        self.output_margin_pts = self.margin_px * self.output_page_width_pts / self.page_width_px
 
     def update_custom_size(self, width: int, height: int):
         self.custom_page_size = (max(100, width), max(100, height))

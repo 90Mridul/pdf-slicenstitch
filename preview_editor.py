@@ -24,6 +24,43 @@ class LayoutPreviewDialog:
         self.MARGIN = self.settings.margin_px
         self.USABLE_H = self.settings.usable_height_px
 
+        original_snippets = self.snippets
+        original_total_h = sum(img.height for img in original_snippets)
+        normalized_snippets = []
+        for img in original_snippets:
+            if img.width == self.A4_W:
+                normalized_snippets.append(img)
+            else:
+                resized_h = max(1, round(img.height * self.A4_W / img.width))
+                normalized_snippets.append(
+                    img.resize((self.A4_W, resized_h), Image.Resampling.LANCZOS)
+                )
+
+        def rescale_y(y):
+            y = max(0, min(y, original_total_h))
+            old_top = 0
+            new_top = 0
+            for old_img, new_img in zip(original_snippets, normalized_snippets):
+                old_bottom = old_top + old_img.height
+                new_bottom = new_top + new_img.height
+                if y <= old_bottom:
+                    return new_top + round((y - old_top) * new_img.height / old_img.height)
+                old_top = old_bottom
+                new_top = new_bottom
+            return new_top
+
+        if self.app_ref.saved_split_y is not None:
+            self.app_ref.saved_split_y = sorted(
+                {
+                    rescale_y(y)
+                    for y in self.app_ref.saved_split_y
+                    if 0 < y < original_total_h
+                }
+            )
+        prev_strip_height = rescale_y(prev_strip_height)
+        self.snippets = normalized_snippets
+        self.app_ref.all_snippets = self.snippets
+
         total_h = sum(img.height for img in self.snippets)
         self.master_strip = Image.new("RGB", (self.A4_W, total_h), (255, 255, 255))
         curr_y = 0
@@ -165,8 +202,8 @@ class LayoutPreviewDialog:
         self.canvas.delete("all")
         self.save_cuts_to_app()
 
-        display_w = int(self.A4_W * self.preview_scale)
-        display_h = int(self.master_strip.height * self.preview_scale)
+        display_w = max(1, int(self.A4_W * self.preview_scale))
+        display_h = max(1, int(self.master_strip.height * self.preview_scale))
         self.zoom_label.config(text=f"{int(self.preview_scale * 100)}%")
 
         resized = self.master_strip.resize((display_w, display_h), Image.Resampling.BILINEAR)
@@ -284,6 +321,8 @@ class LayoutPreviewDialog:
 
         min_y = self.split_y[self.drag_index - 1] + self.settings.safe_margin if self.drag_index > 0 else self.settings.safe_margin
         max_y = self.split_y[self.drag_index + 1] - self.settings.safe_margin if self.drag_index < len(self.split_y) - 1 else self.master_strip.height - self.settings.safe_margin
+        if min_y > max_y:
+            return
 
         clamped_y = max(min_y, min(new_strip_y, max_y))
         self.split_y[self.drag_index] = clamped_y
@@ -295,8 +334,15 @@ class LayoutPreviewDialog:
     def on_double_click(self, event):
         canvas_y = self.canvas.canvasy(event.y)
         click_strip_y = int((canvas_y - self.canvas_y0) / self.preview_scale)
+        canvas_x = self.canvas.canvasx(event.x)
+        cut_index = next((i for i, cut in enumerate(self.split_y) if cut >= click_strip_y), len(self.split_y))
+        min_y = self.split_y[cut_index - 1] + self.settings.safe_margin if cut_index > 0 else self.settings.safe_margin
+        max_y = self.split_y[cut_index] - self.settings.safe_margin if cut_index < len(self.split_y) else self.master_strip.height - self.settings.safe_margin
 
-        if 50 < click_strip_y < self.master_strip.height - 50:
+        if (
+            self.canvas_x0 <= canvas_x <= self.canvas_x0 + int(self.A4_W * self.preview_scale)
+            and min_y < click_strip_y < max_y
+        ):
             self.split_y.append(click_strip_y)
             self.split_y.sort()
             self.redraw_canvas()
@@ -316,8 +362,8 @@ class LayoutPreviewDialog:
 
     def append_another_pdf(self):
         self.save_cuts_to_app()
-        self.top.destroy()
-        self.app_ref.open_pdf(append=True)
+        if self.app_ref.open_pdf(append=True):
+            self.top.destroy()
 
     def export_pdf(self):
         cuts = [0] + sorted(self.split_y) + [self.master_strip.height]
@@ -334,42 +380,48 @@ class LayoutPreviewDialog:
         one_page_height_px = max(1, int(self.A4_W * (A4_PTS_H / A4_PTS_W)))
 
         total_pages_created = 0
-        for i in range(len(cuts) - 1):
-            top_y = cuts[i]
-            bot_y = cuts[i + 1]
-            if bot_y <= top_y:
-                continue
+        try:
+            for i in range(len(cuts) - 1):
+                top_y = cuts[i]
+                bot_y = cuts[i + 1]
+                if bot_y <= top_y:
+                    continue
 
-            chunk = self.master_strip.crop((0, top_y, self.A4_W, bot_y))
-            if chunk.width <= 0 or chunk.height <= 0:
-                continue
+                chunk = self.master_strip.crop((0, top_y, self.A4_W, bot_y))
+                if chunk.width <= 0 or chunk.height <= 0:
+                    continue
 
-            source_h = chunk.height
-            offset_y = 0
-            segment_limit = one_page_height_px if source_h <= one_page_height_px else max_segment_px
-            while offset_y < source_h:
-                seg_h = min(segment_limit, source_h - offset_y)
-                seg = chunk.crop((0, offset_y, chunk.width, offset_y + seg_h))
-                seg_bytes = seg.tobytes("raw", "RGB")
-                seg_pix = pymupdf.Pixmap(pymupdf.csRGB, seg.width, seg.height, seg_bytes, False)
+                source_h = chunk.height
+                offset_y = 0
+                segment_limit = one_page_height_px if source_h <= one_page_height_px else max_segment_px
+                while offset_y < source_h:
+                    seg_h = min(segment_limit, source_h - offset_y)
+                    seg = chunk.crop((0, offset_y, chunk.width, offset_y + seg_h))
+                    seg_bytes = seg.tobytes("raw", "RGB")
+                    seg_pix = pymupdf.Pixmap(pymupdf.csRGB, seg.width, seg.height, seg_bytes, False)
 
-                page = out_pdf.new_page(width=A4_PTS_W, height=A4_PTS_H)
-                fit_scale = min(A4_PTS_W / seg.width, USABLE_PTS_H / seg.height)
-                draw_w = seg.width * fit_scale
-                draw_h = seg.height * fit_scale
-                left = (A4_PTS_W - draw_w) / 2
-                top = (A4_PTS_H - draw_h) / 2
-                rect = pymupdf.Rect(left, top, left + draw_w, top + draw_h)
-                page.insert_image(rect, pixmap=seg_pix)
-                total_pages_created += 1
-                offset_y += seg_h
+                    page = out_pdf.new_page(width=A4_PTS_W, height=A4_PTS_H)
+                    fit_scale = min(A4_PTS_W / seg.width, USABLE_PTS_H / seg.height)
+                    draw_w = seg.width * fit_scale
+                    draw_h = seg.height * fit_scale
+                    left = (A4_PTS_W - draw_w) / 2
+                    top = (A4_PTS_H - draw_h) / 2
+                    rect = pymupdf.Rect(left, top, left + draw_w, top + draw_h)
+                    page.insert_image(rect, pixmap=seg_pix)
+                    total_pages_created += 1
+                    offset_y += seg_h
 
-        if total_pages_created > 0:
+            if total_pages_created == 0:
+                messagebox.showwarning("Warning", "No pages were exported.")
+                return
+
             output_path = ensure_parent_dir(output_path)
             out_pdf.save(output_path)
+        except Exception as exc:
+            messagebox.showerror("Export failed", f"The PDF could not be saved.\n\n{exc}")
+            return
+        finally:
             out_pdf.close()
-            messagebox.showinfo("Success", f"PDF compiled successfully!\nTotal Pages: {total_pages_created}\nSaved to:\n{output_path}")
-            self.top.destroy()
-        else:
-            out_pdf.close()
-            messagebox.showwarning("Warning", "No pages were exported.")
+
+        messagebox.showinfo("Success", f"PDF compiled successfully!\nTotal Pages: {total_pages_created}\nSaved to:\n{output_path}")
+        self.top.destroy()

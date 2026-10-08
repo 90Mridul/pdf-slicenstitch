@@ -63,7 +63,7 @@ Click **Skip page** to exclude the current page. Skipped pages are marked in the
 
 ## Working with multiple PDFs
 
-To add another PDF before exporting, click **Add PDF** and choose a file. When a project already contains pages, the app asks whether to append the new PDF to the current output, start a new project, or cancel.
+To add another PDF before exporting, click **Add PDF** and choose a file. When a PDF is already open or the project already contains pages, the app asks whether to append the new PDF to the current output, start a new project, or cancel. Choosing append keeps the current document's crops and skipped pages, including pages you have not navigated to yet.
 
 You can also click **Append PDF** in the layout preview. The app returns to the page editor to crop the additional document; when you reach its last page, the preview includes the earlier and newly added pages in sequence.
 
@@ -84,14 +84,14 @@ The preview displays all included page sections as one long strip, with cut line
 Click **Export settings** in the main window to change:
 
 - **Page size:** A4, Letter, or Custom.
-- **Margin (px):** margin used when calculating the usable height for automatic page breaks.
+- **Margin (px):** margin used for automatic page breaks and the corresponding print margin in the exported PDF.
 - **PDF DPI:** resolution used to render source pages. Higher values can improve detail but use more memory and can create larger output PDFs.
 - **Preview scale:** initial zoom level for the layout preview.
 - **Custom width and height (px):** pixel dimensions used for the custom working canvas.
 
 The default settings are A4, a 60-pixel margin, 300 DPI, and a 22% preview scale. Settings apply to the current run and are not saved as a profile.
 
-Choosing **Custom** changes the working canvas dimensions and automatic cut spacing. The exported PDF still uses A4 paper dimensions with the current implementation; choose A4 or Letter to set the exported paper size.
+Choosing **Custom** sets the working canvas dimensions and exported paper size. Custom pixel dimensions are converted to PDF points at 300 pixels per inch. The export margin is scaled from the canvas width so the preview and PDF use matching page-break capacity.
 
 ## How exported PDFs are made
 
